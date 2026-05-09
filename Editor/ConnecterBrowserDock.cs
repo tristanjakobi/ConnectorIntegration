@@ -14,6 +14,7 @@ public sealed class ConnecterBrowserDock : Widget
 	private ConnecterWorkspace Workspace;
 	private ConnecterRepository CurrentRepository;
 	private string CurrentFolder;
+	private ConnecterBrowserMode CurrentMode = ConnecterBrowserMode.Files;
 	private ConnecterBrowserFilter CurrentFilter = ConnecterBrowserFilter.All;
 	private AssetListViewMode CurrentViewMode = AssetListViewMode.List;
 
@@ -22,11 +23,14 @@ public sealed class ConnecterBrowserDock : Widget
 	private LineEdit SearchText;
 	private Label StatusLabel;
 	private Button ImportButton;
+	private ToolButton ModeButton;
 	private ToolButton ViewModeButton;
 	private ToolButton FilterButton;
 
 	private CancellationTokenSource ScanCancellation;
 	private IReadOnlyList<ConnecterAssetRecord> CurrentItems = [];
+	private readonly Dictionary<string, Pixmap> ImagePreviewCache = new( StringComparer.OrdinalIgnoreCase );
+	private readonly HashSet<string> FailedImagePreviews = new( StringComparer.OrdinalIgnoreCase );
 
 	public ConnecterBrowserDock( Widget parent ) : base( parent )
 	{
@@ -50,6 +54,9 @@ public sealed class ConnecterBrowserDock : Widget
 	{
 		var toolbar = Layout.AddRow();
 		toolbar.Spacing = 4;
+
+		ModeButton = toolbar.Add( new ToolButton( "Browser Mode", "folder_open", this ) );
+		ModeButton.MouseLeftPress = OpenModeMenu;
 
 		SearchText = toolbar.Add( new LineEdit(), 1 );
 		SearchText.PlaceholderText = "Search Connecter assets";
@@ -106,6 +113,7 @@ public sealed class ConnecterBrowserDock : Widget
 		Layout.Add( splitter, 1 );
 
 		ApplyViewMode( AssetListViewMode.List );
+		ApplyModeLayout();
 	}
 
 	private void LoadWorkspace()
@@ -133,8 +141,13 @@ public sealed class ConnecterBrowserDock : Widget
 		var first = Workspace.Repositories.First();
 		CurrentRepository = first;
 		CurrentFolder = first.FullPath;
-		LocationTree.Open( first );
-		LocationTree.SelectItem( first, skipEvents: true );
+		if ( CurrentMode == ConnecterBrowserMode.Files )
+		{
+			LocationTree.Open( first );
+			LocationTree.SelectItem( first, skipEvents: true );
+		}
+
+		ApplyModeLayout();
 		RefreshAssetList();
 	}
 
@@ -163,19 +176,26 @@ public sealed class ConnecterBrowserDock : Widget
 
 	private async void RefreshAssetList()
 	{
-		if ( CurrentRepository is null || string.IsNullOrWhiteSpace( CurrentFolder ) )
+		if ( Workspace is null || !Workspace.HasRepositories )
+			return;
+
+		if ( CurrentMode == ConnecterBrowserMode.Files && (CurrentRepository is null || string.IsNullOrWhiteSpace( CurrentFolder )) )
 			return;
 
 		ScanCancellation?.Cancel();
 		ScanCancellation = new CancellationTokenSource();
 		var token = ScanCancellation.Token;
 
-		StatusLabel.Text = $"Scanning {CurrentRepository.Name}...";
+		StatusLabel.Text = CurrentMode == ConnecterBrowserMode.Assets
+			? "Indexing Connecter assets..."
+			: $"Scanning {CurrentRepository.Name}...";
 		AssetList.SetItems( [] );
 
 		try
 		{
-			var result = await ConnecterAssetScanner.ScanAsync( CurrentRepository, CurrentFolder, SearchText.Text, CurrentFilter, token );
+			var result = CurrentMode == ConnecterBrowserMode.Assets
+				? await ConnecterAssetScanner.ScanAssetsAsync( Workspace.Repositories, SearchText.Text, CurrentFilter, token )
+				: await ConnecterAssetScanner.ScanAsync( CurrentRepository, CurrentFolder, SearchText.Text, CurrentFilter, token );
 
 			MainThread.Queue( () =>
 			{
@@ -199,6 +219,12 @@ public sealed class ConnecterBrowserDock : Widget
 
 	private string BuildStatusText( ConnecterScanResult result )
 	{
+		if ( CurrentMode == ConnecterBrowserMode.Assets )
+		{
+			var truncationText = result.Truncated ? " (showing first 1,000 results)" : "";
+			return $"Assets {GetFilterLabel( CurrentFilter )}: {result.Items.Count:n0} item{(result.Items.Count == 1 ? "" : "s")}{truncationText}";
+		}
+
 		var location = CurrentFolder is null ? "" : ConnecterPathUtility.GetRelativePath( CurrentRepository.FullPath, CurrentFolder );
 		if ( string.IsNullOrWhiteSpace( location ) || location == "." )
 			location = CurrentRepository.Name;
@@ -210,6 +236,49 @@ public sealed class ConnecterBrowserDock : Widget
 	private void UpdateImportButton()
 	{
 		ImportButton.Enabled = GetSelectedRecords().Any( x => x.CanImport );
+	}
+
+	private void OpenModeMenu()
+	{
+		var menu = new ContextMenu( this );
+
+		AddModeOption( menu, "Files Mode", "folder_open", ConnecterBrowserMode.Files );
+		AddModeOption( menu, "Assets Mode", "category", ConnecterBrowserMode.Assets );
+
+		menu.OpenAt( ModeButton.ScreenRect.BottomLeft, false );
+	}
+
+	private void AddModeOption( ContextMenu menu, string title, string icon, ConnecterBrowserMode mode )
+	{
+		var option = menu.AddOption( title, icon, () => SetBrowserMode( mode ) );
+		option.Checkable = true;
+		option.Checked = mode == CurrentMode;
+	}
+
+	private void SetBrowserMode( ConnecterBrowserMode mode )
+	{
+		if ( mode == CurrentMode )
+			return;
+
+		CurrentMode = mode;
+		ApplyModeLayout();
+
+		if ( mode == ConnecterBrowserMode.Assets )
+			ApplyViewMode( AssetListViewMode.MediumIcons );
+		else
+			ApplyViewMode( AssetListViewMode.List );
+
+		RefreshAssetList();
+	}
+
+	private void ApplyModeLayout()
+	{
+		var assetMode = CurrentMode == ConnecterBrowserMode.Assets;
+
+		LocationTree.Visible = !assetMode;
+		ModeButton.Icon = assetMode ? "category" : "folder_open";
+		ModeButton.ToolTip = assetMode ? "Assets Mode" : "Files Mode";
+		SearchText.PlaceholderText = assetMode ? "Search all Connecter assets" : "Search current Connecter folder";
 	}
 
 	private void OpenFilterMenu()
@@ -265,17 +334,17 @@ public sealed class ConnecterBrowserDock : Widget
 		switch ( viewMode )
 		{
 			case AssetListViewMode.SmallIcons:
-				AssetList.ItemSize = new Vector2( 72, 104 );
+				AssetList.ItemSize = CurrentMode == ConnecterBrowserMode.Assets ? new Vector2( 96, 132 ) : new Vector2( 72, 104 );
 				AssetList.ItemSpacing = 4;
 				AssetList.ItemPaint = PaintIconItem;
 				break;
 			case AssetListViewMode.MediumIcons:
-				AssetList.ItemSize = new Vector2( 104, 144 );
+				AssetList.ItemSize = CurrentMode == ConnecterBrowserMode.Assets ? new Vector2( 132, 176 ) : new Vector2( 104, 144 );
 				AssetList.ItemSpacing = 4;
 				AssetList.ItemPaint = PaintIconItem;
 				break;
 			case AssetListViewMode.LargeIcons:
-				AssetList.ItemSize = new Vector2( 136, 184 );
+				AssetList.ItemSize = CurrentMode == ConnecterBrowserMode.Assets ? new Vector2( 168, 220 ) : new Vector2( 136, 184 );
 				AssetList.ItemSpacing = 6;
 				AssetList.ItemPaint = PaintIconItem;
 				break;
@@ -325,6 +394,12 @@ public sealed class ConnecterBrowserDock : Widget
 		if ( item.Object is not ConnecterAssetRecord record )
 			return;
 
+		if ( CurrentMode == ConnecterBrowserMode.Assets )
+		{
+			PaintAssetTile( item, record );
+			return;
+		}
+
 		DrawItemBackground( item );
 
 		var rect = item.Rect.Shrink( 4 );
@@ -335,8 +410,7 @@ public sealed class ConnecterBrowserDock : Widget
 		Paint.ClearPen();
 		Paint.DrawRect( iconRect, Theme.ControlRadius );
 
-		Paint.SetPen( GetKindColor( record.Kind ) );
-		Paint.DrawIcon( iconRect.Shrink( 16 ), GetKindIcon( record ), Math.Min( 48, iconRect.Width - 20 ), TextFlag.Center );
+		DrawPreviewContent( record, iconRect );
 
 		var textRect = rect;
 		textRect.Top = iconRect.Bottom + 4;
@@ -349,6 +423,89 @@ public sealed class ConnecterBrowserDock : Widget
 		{
 			Paint.SetPen( Theme.Yellow );
 			Paint.DrawIcon( rect.Shrink( 4 ), "warning", 16, TextFlag.RightTop );
+		}
+	}
+
+	private void PaintAssetTile( VirtualWidget item, ConnecterAssetRecord record )
+	{
+		DrawItemBackground( item );
+
+		var rect = item.Rect.Shrink( 4 );
+		var previewRect = rect;
+		previewRect.Height = previewRect.Width;
+
+		Paint.SetBrush( Theme.ControlBackground );
+		Paint.ClearPen();
+		Paint.DrawRect( previewRect, Theme.ControlRadius );
+
+		DrawPreviewContent( record, previewRect );
+
+		var nameRect = rect.Shrink( 2, 0 );
+		nameRect.Top = previewRect.Bottom + 5;
+		nameRect.Height = 28;
+
+		Paint.SetDefaultFont( 7 );
+		Paint.SetPen( item.Selected ? Color.White : Theme.Text );
+		Paint.DrawText( nameRect, Paint.GetElidedText( record.Name, nameRect.Width, ElideMode.Middle ), TextFlag.LeftTop );
+
+		var metaRect = nameRect;
+		metaRect.Top += 28;
+		metaRect.Height = 16;
+
+		Paint.SetPen( Theme.TextLight );
+		Paint.DrawText( metaRect, Paint.GetElidedText( $"{record.Kind} · {record.RepositoryName}", metaRect.Width, ElideMode.Right ), TextFlag.LeftTop );
+
+		Paint.SetPen( GetKindColor( record.Kind ) );
+		Paint.DrawIcon( previewRect.Shrink( 5 ), GetKindIcon( record ), 16, TextFlag.LeftTop );
+
+		if ( record.Warning is not null )
+		{
+			Paint.SetPen( Theme.Yellow );
+			Paint.DrawIcon( previewRect.Shrink( 5 ), "warning", 16, TextFlag.RightTop );
+		}
+	}
+
+	private void DrawPreviewContent( ConnecterAssetRecord record, Rect previewRect )
+	{
+		if ( record.Kind == ConnecterAssetKind.Image && TryGetImagePreview( record.FullPath, out var pixmap ) )
+		{
+			Paint.BilinearFiltering = true;
+			Paint.Draw( previewRect.Shrink( 2 ), pixmap );
+			Paint.BilinearFiltering = false;
+			return;
+		}
+
+		var color = GetKindColor( record.Kind );
+		Paint.ClearPen();
+		Paint.SetBrush( color.WithAlpha( 0.12f ) );
+		Paint.DrawRect( previewRect.Shrink( 2 ), Theme.ControlRadius );
+
+		Paint.SetPen( color );
+		Paint.DrawIcon( previewRect.Shrink( 18 ), GetKindIcon( record ), Math.Min( 56, previewRect.Width - 24 ), TextFlag.Center );
+	}
+
+	private bool TryGetImagePreview( string path, out Pixmap pixmap )
+	{
+		if ( ImagePreviewCache.TryGetValue( path, out pixmap ) )
+			return true;
+
+		if ( FailedImagePreviews.Contains( path ) || !File.Exists( path ) )
+		{
+			pixmap = null;
+			return false;
+		}
+
+		try
+		{
+			pixmap = Pixmap.FromFile( path );
+			ImagePreviewCache[path] = pixmap;
+			return pixmap is not null;
+		}
+		catch
+		{
+			FailedImagePreviews.Add( path );
+			pixmap = null;
+			return false;
 		}
 	}
 
@@ -541,6 +698,7 @@ public sealed class ConnecterBrowserDock : Widget
 		return filter switch
 		{
 			ConnecterBrowserFilter.Models => "view_in_ar",
+			ConnecterBrowserFilter.Materials => "texture",
 			ConnecterBrowserFilter.Images => "image",
 			ConnecterBrowserFilter.Audio => "volume_up",
 			ConnecterBrowserFilter.Sbox => "deployed_code",
@@ -560,6 +718,11 @@ public sealed class ConnecterBrowserDock : Widget
 			ConnecterAssetKind.Unknown => Color.Gray,
 			_ => Theme.Text
 		};
+	}
+
+	private static string GetFilterLabel( ConnecterBrowserFilter filter )
+	{
+		return filter == ConnecterBrowserFilter.All ? "" : $"({filter})";
 	}
 }
 
