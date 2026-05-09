@@ -1,7 +1,22 @@
 {
-  "Title": "Connector Integration",
+  "Title": "Connecter Browser",
   "Type": "library",
-  "Org": "local",
+  "Org": "tristan",
   "Ident": "connectorintegration",
-  "Schema": 1
+  "Schema": 1,
+  "IncludeSourceFiles": false,
+  "Resources": null,
+  "PackageReferences": [],
+  "EditorReferences": null,
+  "Mounts": null,
+  "IsStandaloneOnly": false,
+  "Metadata": {
+    "Description": "Editor-only Connecter browser for s&box. Browse indexed local Connecter folders, view a flat asset grid, and import selected assets into the active project on demand.",
+    "CsProjName": "connectorintegration",
+    "ProjectTemplate": {
+      "Icon": "perm_media",
+      "Order": 50,
+      "Description": "Browse and import local Connecter asset libraries from inside the s&box editor."
+    }
+  }
 }

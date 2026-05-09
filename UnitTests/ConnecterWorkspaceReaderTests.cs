@@ -63,6 +63,41 @@ public sealed class ConnecterWorkspaceReaderTests
 		Assert.AreEqual( ConnecterPathUtility.NormalizeDirectoryPath( repositoryRoot ), repositories[0].FullPath );
 	}
 
+	[TestMethod]
+	public void DiscoversWorkspacePathFromCandidates()
+	{
+		var workspacePath = Path.Combine( TempRoot, "Connecter" );
+		Directory.CreateDirectory( workspacePath );
+		File.WriteAllText( Path.Combine( workspacePath, "settings.xml" ), "<settings />" );
+
+		var discovered = ConnecterWorkspaceReader.DiscoverWorkspacePaths( new[] { Path.Combine( TempRoot, "Missing" ), workspacePath } );
+
+		Assert.AreEqual( 1, discovered.Count );
+		Assert.AreEqual( Path.GetFullPath( workspacePath ), discovered[0] );
+	}
+
+	[TestMethod]
+	public void ReadsExplicitWorkspacePath()
+	{
+		var workspacePath = Path.Combine( TempRoot, "Connecter" );
+		var repositoryRoot = Path.Combine( TempRoot, "Basic Assets" );
+		Directory.CreateDirectory( workspacePath );
+		Directory.CreateDirectory( repositoryRoot );
+
+		File.WriteAllText( Path.Combine( workspacePath, "settings.xml" ), $"""
+<?xml version="1.0" encoding="utf-8"?>
+<settings>
+	<setting key="2007">["{EscapeJsonPath( repositoryRoot )}"]</setting>
+</settings>
+""" );
+
+		var workspace = ConnecterWorkspaceReader.Read( workspacePath, allowAutoDiscover: false );
+
+		Assert.AreEqual( Path.GetFullPath( workspacePath ), workspace.WorkspacePath );
+		Assert.AreEqual( 1, workspace.Repositories.Count );
+		Assert.AreEqual( "Basic Assets", workspace.Repositories[0].Name );
+	}
+
 	private static string EscapeJsonPath( string path )
 	{
 		return path.Replace( "\\", "\\\\" );

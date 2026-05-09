@@ -20,6 +20,7 @@ public sealed class ConnecterBrowserDock : Widget
 
 	private TreeView LocationTree;
 	private ListView AssetList;
+	private LineEdit WorkspaceText;
 	private LineEdit SearchText;
 	private Label StatusLabel;
 	private Button ImportButton;
@@ -42,6 +43,7 @@ public sealed class ConnecterBrowserDock : Widget
 		Layout.Spacing = 4;
 
 		BuildToolbar();
+		BuildWorkspaceBar();
 		BuildBody();
 
 		StatusLabel = Layout.Add( new Label( this ) { Text = "Loading Connecter workspace..." } );
@@ -86,6 +88,38 @@ public sealed class ConnecterBrowserDock : Widget
 		ImportButton.Clicked = () => ImportSelected();
 	}
 
+	private void BuildWorkspaceBar()
+	{
+		var workspaceRow = Layout.AddRow();
+		workspaceRow.Spacing = 4;
+
+		workspaceRow.Add( new Label( "Workspace", this ) { MinimumWidth = 74 } );
+
+		WorkspaceText = workspaceRow.Add( new LineEdit(), 1 );
+		WorkspaceText.PlaceholderText = "Auto-detect Connecter workspace";
+
+		var savedWorkspacePath = ConnecterWorkspaceReader.GetSavedWorkspacePath();
+		if ( ConnecterWorkspaceReader.IsConnecterWorkspacePath( savedWorkspacePath ) )
+		{
+			WorkspaceText.Text = savedWorkspacePath;
+		}
+
+		workspaceRow.Add( new ToolButton( "Use This Workspace Path", "done", this )
+		{
+			MouseLeftPress = ApplyManualWorkspacePath
+		} );
+
+		workspaceRow.Add( new ToolButton( "Auto Detect Workspace", "travel_explore", this )
+		{
+			MouseLeftPress = AutoDetectWorkspace
+		} );
+
+		workspaceRow.Add( new ToolButton( "Workspace Options", "more_vert", this )
+		{
+			MouseLeftPress = OpenWorkspaceMenu
+		} );
+	}
+
 	private void BuildBody()
 	{
 		var splitter = new Splitter( this )
@@ -120,12 +154,15 @@ public sealed class ConnecterBrowserDock : Widget
 	{
 		ScanCancellation?.Cancel();
 
-		Workspace = ConnecterWorkspaceReader.Read();
+		Workspace = ConnecterWorkspaceReader.Read( GetManualWorkspacePath() );
+		WorkspaceText.Text = Workspace.WorkspacePath;
 		LocationTree.Clear();
 
 		if ( !Workspace.HasRepositories )
 		{
-			StatusLabel.Text = $"No Connecter roots found at {ConnecterWorkspaceReader.DefaultWorkspacePath}";
+			StatusLabel.Text = string.IsNullOrWhiteSpace( Workspace.WorkspacePath )
+				? "No Connecter workspace found. Enter the folder containing default.dcdb or settings.xml."
+				: $"No Connecter roots found at {Workspace.WorkspacePath}";
 			CurrentRepository = null;
 			CurrentFolder = null;
 			AssetList.SetItems( [] );
@@ -149,6 +186,62 @@ public sealed class ConnecterBrowserDock : Widget
 
 		ApplyModeLayout();
 		RefreshAssetList();
+	}
+
+	private string GetManualWorkspacePath()
+	{
+		var text = WorkspaceText?.Text;
+		return string.IsNullOrWhiteSpace( text ) ? null : text;
+	}
+
+	private void ApplyManualWorkspacePath()
+	{
+		var path = GetManualWorkspacePath();
+		if ( string.IsNullOrWhiteSpace( path ) )
+		{
+			AutoDetectWorkspace();
+			return;
+		}
+
+		ConnecterWorkspaceReader.SetSavedWorkspacePath( path );
+		LoadWorkspace();
+	}
+
+	private void AutoDetectWorkspace()
+	{
+		ConnecterWorkspaceReader.ClearSavedWorkspacePath();
+		WorkspaceText.Text = string.Empty;
+
+		var discovered = ConnecterWorkspaceReader.DiscoverWorkspacePaths().FirstOrDefault();
+		if ( !string.IsNullOrWhiteSpace( discovered ) )
+		{
+			WorkspaceText.Text = discovered;
+			ConnecterWorkspaceReader.SetSavedWorkspacePath( discovered );
+		}
+
+		LoadWorkspace();
+	}
+
+	private void OpenWorkspaceMenu()
+	{
+		var menu = new ContextMenu( this );
+
+		menu.AddOption( "Apply Workspace Path", "done", ApplyManualWorkspacePath );
+		menu.AddOption( "Auto Detect Workspace", "travel_explore", AutoDetectWorkspace );
+		menu.AddSeparator();
+		menu.AddOption( "Reveal Workspace", "folder_open", () => EditorUtility.OpenFolder( Workspace?.WorkspacePath ?? WorkspaceText.Text ) )
+			.Enabled = Workspace is not null && Directory.Exists( Workspace.WorkspacePath );
+		menu.AddOption( "Copy Workspace Path", "content_copy", () => EditorUtility.Clipboard.Copy( Workspace?.WorkspacePath ?? WorkspaceText.Text ) )
+			.Enabled = !string.IsNullOrWhiteSpace( Workspace?.WorkspacePath ?? WorkspaceText.Text );
+		menu.AddSeparator();
+		menu.AddOption( "Clear Saved Workspace", "delete", () =>
+		{
+			ConnecterWorkspaceReader.ClearSavedWorkspacePath();
+			WorkspaceText.Text = string.Empty;
+			LoadWorkspace();
+		} );
+
+		menu.OpenAtCursor();
 	}
 
 	private void OnLocationSelected( object item )
@@ -453,7 +546,7 @@ public sealed class ConnecterBrowserDock : Widget
 		metaRect.Height = 16;
 
 		Paint.SetPen( Theme.TextLight );
-		Paint.DrawText( metaRect, Paint.GetElidedText( $"{record.Kind} · {record.RepositoryName}", metaRect.Width, ElideMode.Right ), TextFlag.LeftTop );
+		Paint.DrawText( metaRect, Paint.GetElidedText( $"{record.Kind} - {record.RepositoryName}", metaRect.Width, ElideMode.Right ), TextFlag.LeftTop );
 
 		Paint.SetPen( GetKindColor( record.Kind ) );
 		Paint.DrawIcon( previewRect.Shrink( 5 ), GetKindIcon( record ), 16, TextFlag.LeftTop );

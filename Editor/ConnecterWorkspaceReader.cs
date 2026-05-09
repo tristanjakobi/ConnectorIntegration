@@ -12,16 +12,18 @@ namespace Editor;
 
 public static class ConnecterWorkspaceReader
 {
-	public const string DefaultWorkspacePath = @"E:\Game Assets\Connecter";
+	private const string SavedWorkspaceFileName = "workspace.txt";
 
 	private static readonly Regex WindowsPathRegex = new( @"[A-Za-z]:\\[^""\x00-\x1F<>|?*]+", RegexOptions.Compiled );
 	private static readonly Regex SettingsRepositoryRegex = new(
 		@"<setting\b[^>]*\bkey\s*=\s*[""']2007[""'][^>]*>(?<value>.*?)</setting>",
 		RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline );
 
-	public static ConnecterWorkspace Read( string workspacePath = DefaultWorkspacePath )
+	public static ConnecterWorkspace Read( string workspacePath = null, bool allowAutoDiscover = true )
 	{
-		workspacePath = NormalizeFullPath( workspacePath );
+		workspacePath = ResolveWorkspacePath( workspacePath, allowAutoDiscover );
+		if ( string.IsNullOrWhiteSpace( workspacePath ) )
+			return new ConnecterWorkspace( string.Empty, [] );
 
 		var repositories = new List<ConnecterRepository>();
 		repositories.AddRange( ReadRepositoriesFromDatabase( Path.Combine( workspacePath, "default.dcdb" ) ) );
@@ -32,6 +34,72 @@ public static class ConnecterWorkspaceReader
 		}
 
 		return new ConnecterWorkspace( workspacePath, DeduplicateRepositories( repositories ) );
+	}
+
+	public static string GetSavedWorkspacePath()
+	{
+		try
+		{
+			var settingsPath = GetSavedWorkspaceFilePath();
+			if ( File.Exists( settingsPath ) )
+				return File.ReadAllText( settingsPath ).Trim();
+		}
+		catch
+		{
+		}
+
+		return string.Empty;
+	}
+
+	public static void SetSavedWorkspacePath( string workspacePath )
+	{
+		try
+		{
+			var settingsPath = GetSavedWorkspaceFilePath();
+			var settingsFolder = Path.GetDirectoryName( settingsPath );
+			if ( !string.IsNullOrWhiteSpace( settingsFolder ) )
+				Directory.CreateDirectory( settingsFolder );
+
+			File.WriteAllText( settingsPath, NormalizeFullPath( workspacePath ) );
+		}
+		catch
+		{
+		}
+	}
+
+	public static void ClearSavedWorkspacePath()
+	{
+		try
+		{
+			var settingsPath = GetSavedWorkspaceFilePath();
+			var settingsFolder = Path.GetDirectoryName( settingsPath );
+			if ( !string.IsNullOrWhiteSpace( settingsFolder ) )
+				Directory.CreateDirectory( settingsFolder );
+
+			File.WriteAllText( settingsPath, string.Empty );
+		}
+		catch
+		{
+		}
+	}
+
+	public static IReadOnlyList<string> DiscoverWorkspacePaths( IEnumerable<string> candidatePaths = null )
+	{
+		return (candidatePaths ?? GetDefaultWorkspaceCandidates())
+			.Select( NormalizeFullPath )
+			.Where( IsConnecterWorkspacePath )
+			.Distinct( StringComparer.OrdinalIgnoreCase )
+			.ToList();
+	}
+
+	public static bool IsConnecterWorkspacePath( string workspacePath )
+	{
+		if ( string.IsNullOrWhiteSpace( workspacePath ) )
+			return false;
+
+		var normalized = NormalizeFullPath( workspacePath );
+		return Directory.Exists( normalized )
+			&& (File.Exists( Path.Combine( normalized, "default.dcdb" ) ) || File.Exists( Path.Combine( normalized, "settings.xml" ) ));
 	}
 
 	public static IReadOnlyList<ConnecterRepository> ReadRepositoriesFromSettingsXml( string settingsPath )
@@ -98,11 +166,80 @@ public static class ConnecterWorkspaceReader
 			.ToList();
 	}
 
+	private static string ResolveWorkspacePath( string requestedPath, bool allowAutoDiscover )
+	{
+		if ( !string.IsNullOrWhiteSpace( requestedPath ) )
+			return NormalizeFullPath( requestedPath );
+
+		var savedPath = GetSavedWorkspacePath();
+		if ( IsConnecterWorkspacePath( savedPath ) )
+			return NormalizeFullPath( savedPath );
+
+		if ( allowAutoDiscover )
+		{
+			var discovered = DiscoverWorkspacePaths().FirstOrDefault();
+			if ( !string.IsNullOrWhiteSpace( discovered ) )
+				return discovered;
+		}
+
+		if ( !string.IsNullOrWhiteSpace( savedPath ) )
+			return NormalizeFullPath( savedPath );
+
+		return string.Empty;
+	}
+
+	private static IEnumerable<string> GetDefaultWorkspaceCandidates()
+	{
+		var candidates = new List<string>();
+
+		AddIfNotEmpty( candidates, Environment.GetFolderPath( Environment.SpecialFolder.MyDocuments ), "Connecter" );
+		AddIfNotEmpty( candidates, Environment.GetFolderPath( Environment.SpecialFolder.ApplicationData ), "Design Connected", "Connecter" );
+		AddIfNotEmpty( candidates, Environment.GetFolderPath( Environment.SpecialFolder.LocalApplicationData ), "Design Connected", "Connecter" );
+		AddIfNotEmpty( candidates, Environment.GetFolderPath( Environment.SpecialFolder.ApplicationData ), "Connecter" );
+		AddIfNotEmpty( candidates, Environment.GetFolderPath( Environment.SpecialFolder.LocalApplicationData ), "Connecter" );
+
+		foreach ( var drive in DriveInfo.GetDrives().Where( x => x.DriveType == DriveType.Fixed && x.IsReady ) )
+		{
+			candidates.Add( Path.Combine( drive.RootDirectory.FullName, "Game Assets", "Connecter" ) );
+			candidates.Add( Path.Combine( drive.RootDirectory.FullName, "Connecter" ) );
+		}
+
+		return candidates;
+	}
+
+	private static void AddIfNotEmpty( List<string> candidates, string root, params string[] segments )
+	{
+		if ( string.IsNullOrWhiteSpace( root ) )
+			return;
+
+		var pathSegments = new string[segments.Length + 1];
+		pathSegments[0] = root;
+		Array.Copy( segments, 0, pathSegments, 1, segments.Length );
+		candidates.Add( Path.Combine( pathSegments ) );
+	}
+
+	private static string GetSavedWorkspaceFilePath()
+	{
+		var appData = Environment.GetFolderPath( Environment.SpecialFolder.LocalApplicationData );
+		if ( string.IsNullOrWhiteSpace( appData ) )
+			appData = AppContext.BaseDirectory;
+
+		return Path.Combine( appData, "sbox", "ConnecterBrowser", SavedWorkspaceFileName );
+	}
+
 	private static string NormalizeFullPath( string path )
 	{
 		if ( string.IsNullOrWhiteSpace( path ) )
 			return string.Empty;
 
-		return Path.GetFullPath( path.Trim().TrimEnd( Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar ) );
+		var trimmed = path.Trim().TrimEnd( Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar );
+		try
+		{
+			return Path.GetFullPath( trimmed );
+		}
+		catch
+		{
+			return trimmed;
+		}
 	}
 }
