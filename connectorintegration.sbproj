@@ -1,0 +1,7 @@
+{
+  "Title": "Connector Integration",
+  "Type": "library",
+  "Org": "local",
+  "Ident": "connectorintegration",
+  "Schema": 1
+}
